@@ -68,7 +68,7 @@ class PyreflyTypeBinder(TypeBinder):
                     declared_type = self.type_env.list.instance
                 elif isinstance(node, (ast.Dict, ast.DictComp)):
                     declared_type = self.type_env.dict.instance
-            self.set_type(node, declared_type, None)
+            self.set_type(node, declared_type)
 
             # Constant: when a type context is provided (e.g. from
             # visitAugAssign passing target_type for `i += 1` where i
@@ -82,7 +82,7 @@ class PyreflyTypeBinder(TypeBinder):
 
             elif isinstance(node, Compare):
                 for op in node.ops:
-                    self.set_type(op, self.type_env.DYNAMIC, None)
+                    self.set_type(op, self.type_env.DYNAMIC)
 
             # Name: set PreserveRefinedFields (always), declare locals for
             # Store context, and set TypeDescr for module-level names so
@@ -105,7 +105,7 @@ class PyreflyTypeBinder(TypeBinder):
                     mod_typ is not None
                     and declared_type is self.type_env.dynamic.instance
                 ):
-                    self.set_type(node, mod_typ, None)
+                    self.set_type(node, mod_typ)
 
             # Attribute: when the base is a ModuleInstance, set TypeDescr
             # for direct access and call bind_attr to resolve from the
@@ -143,7 +143,7 @@ class PyreflyTypeBinder(TypeBinder):
                     isinstance(self.scope, ast.ClassDef)
                     and isinstance(self.get_type(self.scope), Dataclass)
                 ):
-                    self.set_type(node, declared_type, None)
+                    self.set_type(node, declared_type)
                     if isinstance(self.scope, ast.ClassDef):
                         self.module.compile_non_static.add(self.scope)
         else:
