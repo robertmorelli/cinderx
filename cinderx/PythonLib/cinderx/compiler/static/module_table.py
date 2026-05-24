@@ -278,6 +278,8 @@ class ModuleTable:
             self._children.update(members)
         self.compiler = compiler
         self.types: dict[AST, Value] = {}
+        self.node_ctx_value: dict[AST, Value | None] = {}
+        self.node_value: dict[AST, Value | None] = {}
         self.node_data: dict[tuple[AST, object], object] = {}
         self.flags: set[ModuleFlag] = set()
         self.decls: list[tuple[AST, str | None, Value | None]] = []

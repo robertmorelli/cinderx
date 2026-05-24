@@ -693,8 +693,12 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         self,
         node: AST,
         type: Value,
+        node_ctx_value: Value | None = None,
     ) -> None:
         self.module.types[node] = type
+        if isinstance(node, ast.expr) and not isinstance(type or node_ctx_value, Class):
+            self.module.node_value[node] = type or node_ctx_value
+            self.module.node_ctx_value[node] = node_ctx_value or type
 
     def get_type(self, node: AST) -> Value:
         if self.nodes_default_dynamic:
@@ -855,7 +859,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         self.visit(node.value, target_type)
         value_type = self.get_type(node.value)
         self.assign_value(target, value_type)
-        self.set_type(node, self.get_type(target))
+        self.set_type(node, self.get_type(target), type_ctx)
         return self.refine_truthy(node.target)
 
     def visitAssign(self, node: Assign) -> None:
@@ -991,7 +995,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                         else old_type
                     ),
                 )
-                self.set_type(value, old_type)
+                self.set_type(value, old_type, type_ctx)
 
                 new_effect.reverse(self.type_state)
             # We know nothing about the last node of an or, so we simply widen with its type.
@@ -1005,7 +1009,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                 self.visit(value)
                 final_type = self.widen(final_type, self.get_type(value))
 
-        self.set_type(node, final_type or self.type_env.DYNAMIC)
+        self.set_type(node, final_type or self.type_env.DYNAMIC, type_ctx)
         return effect
 
     def visitBinOp(self, node: BinOp, type_ctx: Class | None = None) -> NarrowingEffect:
@@ -1059,7 +1063,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         )
         self.scopes.pop()
 
-        self.set_type(node, self.type_env.DYNAMIC)
+        self.set_type(node, self.type_env.DYNAMIC, type_ctx)
         return NO_EFFECT
 
     def visitIfExp(self, node: IfExp, type_ctx: Class | None = None) -> NarrowingEffect:
@@ -1079,6 +1083,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         self.set_type(
             node,
             self.type_env.get_union((body_t.klass, else_t.klass)).instance,
+            type_ctx,
         )
         return NO_EFFECT
 
@@ -1098,7 +1103,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
             self.visitExpectedType(
                 step, self.type_env.DYNAMIC, "slice indices cannot be primitives"
             )
-        self.set_type(node, self.type_env.slice.instance)
+        self.set_type(node, self.type_env.slice.instance, type_ctx)
         return NO_EFFECT
 
     def widen(self, existing: Value | None, new: Value) -> Value:
@@ -1163,7 +1168,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                 ).instance
             else:
                 typ = self.type_env.dict.exact_type().instance
-            self.set_type(node, typ)
+            self.set_type(node, typ, type_ctx)
             return typ
 
         # Calculate the type that is inferred by the keys and values
@@ -1182,7 +1187,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
             (key_type.klass, value_type.klass),
         )
 
-        self.set_type(node, type_ctx)
+        self.set_type(node, type_ctx, type_ctx)
         # We can use the type context to have a type which is wider than the
         # inferred types.  But we need to make sure that the keys/values are compatible
         # with the wider type, and if not, we'll report that the inferred type isn't
@@ -1208,7 +1213,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
             else:
                 typ = self.type_env.list.exact_type().instance
 
-            self.set_type(node, typ)
+            self.set_type(node, typ, type_ctx)
             return typ
 
         # Calculate the type that is inferred by the item.
@@ -1224,7 +1229,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
             (item_type.nonliteral().klass.inexact_type(),),
         )
 
-        self.set_type(node, type_ctx)
+        self.set_type(node, type_ctx, type_ctx)
         # We can use the type context to have a type which is wider than the
         # inferred types.  But we need to make sure that the items are compatible
         # with the wider type, and if not, we'll report that the inferred type isn't
@@ -1238,14 +1243,14 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
             self.visitExpectedType(
                 elt, self.type_env.DYNAMIC, "set members cannot be primitives"
             )
-        self.set_type(node, self.type_env.set.exact_type().instance)
+        self.set_type(node, self.type_env.set.exact_type().instance, type_ctx)
         return NO_EFFECT
 
     def visitGeneratorExp(
         self, node: GeneratorExp, type_ctx: Class | None = None
     ) -> NarrowingEffect:
         self.visit_comprehension(node, node.generators, node.elt)
-        self.set_type(node, self.type_env.DYNAMIC)
+        self.set_type(node, self.type_env.DYNAMIC, type_ctx)
         return NO_EFFECT
 
     def visitListComp(
@@ -1260,7 +1265,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         self, node: SetComp, type_ctx: Class | None = None
     ) -> NarrowingEffect:
         self.visit_comprehension(node, node.generators, node.elt)
-        self.set_type(node, self.type_env.set.exact_type().instance)
+        self.set_type(node, self.type_env.set.exact_type().instance, type_ctx)
         return NO_EFFECT
 
     def get_target_decl(self, name: str) -> TypeDeclaration | None:
@@ -1412,7 +1417,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
             self.visitExpectedType(
                 value, self.type_env.DYNAMIC, "cannot yield a primitive value"
             )
-        self.set_type(node, self.type_env.DYNAMIC)
+        self.set_type(node, self.type_env.DYNAMIC, type_ctx)
         return NO_EFFECT
 
     def visitYieldFrom(
@@ -1421,7 +1426,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         self.visitExpectedType(
             node.value, self.type_env.DYNAMIC, "cannot yield from a primitive value"
         )
-        self.set_type(node, self.type_env.DYNAMIC)
+        self.set_type(node, self.type_env.DYNAMIC, type_ctx)
         return NO_EFFECT
 
     def refine_truthy(self, node: ast.expr | None) -> NarrowingEffect | None:
@@ -1453,8 +1458,8 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
             right = node.comparators[0]
             other = None
 
-            self.set_type(node, self.type_env.bool.instance)
-            self.set_type(node.ops[0], self.type_env.bool.instance)
+            self.set_type(node, self.type_env.bool.instance, type_ctx)
+            self.set_type(node.ops[0], self.type_env.bool.instance, type_ctx)
 
             self.visit(left)
             self.visit(right)
@@ -1508,7 +1513,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         )
         if fs := node.format_spec:
             self.visit(fs)
-        self.set_type(node, self.type_env.DYNAMIC)
+        self.set_type(node, self.type_env.DYNAMIC, type_ctx)
         return NO_EFFECT
 
     def visitJoinedStr(
@@ -1517,7 +1522,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         for value in node.values:
             self.visit(value)
 
-        self.set_type(node, self.type_env.str.exact_type().instance)
+        self.set_type(node, self.type_env.str.exact_type().instance, type_ctx)
         return NO_EFFECT
 
     def visitConstant(
@@ -1546,7 +1551,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                 typ, idx, source_nodes = self.type_state.refined_fields[value.id][
                     node.attr
                 ]
-                self.set_type(node, typ)
+                self.set_type(node, typ, type_ctx)
                 temp_name = self._refined_field_name(idx)
                 for source_node in source_nodes:
                     is_used = node != source_node
@@ -1602,7 +1607,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
             self.type_env.DYNAMIC,
             "cannot use primitive in starred expression",
         )
-        self.set_type(node, self.type_env.DYNAMIC)
+        self.set_type(node, self.type_env.DYNAMIC, type_ctx)
         return NO_EFFECT
 
     def visitName(self, node: Name, type_ctx: Class | None = None) -> NarrowingEffect:
@@ -1614,7 +1619,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
             if node.id in self.type_state.local_types:
                 found_name = True
             var_type = self.type_state.local_types.get(node.id, self.type_env.DYNAMIC)
-            self.set_type(node, var_type)
+            self.set_type(node, var_type, type_ctx)
         else:
             typ, descr = self.module.resolve_name_with_descr(
                 node.id, self.context_qualname
@@ -1626,7 +1631,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                 decl = self.scopes[0].decl_types.get(node.id)
                 if decl is not None:
                     typ = decl.type
-            self.set_type(node, typ or self.type_env.DYNAMIC)
+            self.set_type(node, typ or self.type_env.DYNAMIC, type_ctx)
             if descr is not None:
                 self.set_node_data(node, TypeDescr, descr)
             if typ is not None:
@@ -1690,7 +1695,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
     ) -> NarrowingEffect:
         for elt in node.elts:
             self.visitExpectedType(elt, self.type_env.DYNAMIC)
-        self.set_type(node, self.type_env.tuple.exact_type().instance)
+        self.set_type(node, self.type_env.tuple.exact_type().instance, type_ctx)
         return NO_EFFECT
 
     def set_terminal_kind(self, node: AST, level: TerminalKind) -> None:

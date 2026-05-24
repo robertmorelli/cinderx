@@ -886,12 +886,13 @@ class Value:
         visitor.set_type(
             node,
             self.resolve_attr(node, visitor) or visitor.type_env.DYNAMIC,
+            type_ctx,
         )
 
     def bind_await(
         self, node: ast.Await, visitor: TypeBinder, type_ctx: Class | None
     ) -> None:
-        visitor.set_type(node, visitor.type_env.DYNAMIC)
+        visitor.set_type(node, visitor.type_env.DYNAMIC, type_ctx)
 
     def bind_call(
         self, node: ast.Call, visitor: TypeBinder, type_ctx: Class | None
@@ -942,6 +943,7 @@ class Value:
         visitor.set_type(
             node,
             self.resolve_subscr(node, type, visitor) or visitor.type_env.DYNAMIC,
+            type_ctx,
         )
 
     def resolve_subscr(
@@ -1310,6 +1312,7 @@ class Object(Value, Generic[TClass]):
             node,
             self.resolve_descr_get(node, inst, ctx, visitor)
             or visitor.type_env.DYNAMIC,
+            type_ctx,
         )
 
     def resolve_subscr(
@@ -1340,11 +1343,11 @@ class Object(Value, Generic[TClass]):
         visitor: TypeBinder,
         type_ctx: Class | None,
     ) -> bool:
-        visitor.set_type(op, visitor.type_env.DYNAMIC)
+        visitor.set_type(op, visitor.type_env.DYNAMIC, type_ctx)
         if isinstance(op, (ast.Is, ast.IsNot, ast.In, ast.NotIn)):
-            visitor.set_type(node, visitor.type_env.bool.instance)
+            visitor.set_type(node, visitor.type_env.bool.instance, type_ctx)
             return True
-        visitor.set_type(node, visitor.type_env.DYNAMIC)
+        visitor.set_type(node, visitor.type_env.DYNAMIC, type_ctx)
         return False
 
     def bind_binop(
@@ -1356,16 +1359,16 @@ class Object(Value, Generic[TClass]):
         self, node: ast.BinOp, visitor: TypeBinder, type_ctx: Class | None
     ) -> bool:
         # we'll set the type in case we're the only one called
-        visitor.set_type(node, visitor.type_env.DYNAMIC)
+        visitor.set_type(node, visitor.type_env.DYNAMIC, type_ctx)
         return False
 
     def bind_unaryop(
         self, node: ast.UnaryOp, visitor: TypeBinder, type_ctx: Class | None
     ) -> None:
         if isinstance(node.op, ast.Not):
-            visitor.set_type(node, visitor.type_env.bool.instance)
+            visitor.set_type(node, visitor.type_env.bool.instance, type_ctx)
         else:
-            visitor.set_type(node, visitor.type_env.DYNAMIC)
+            visitor.set_type(node, visitor.type_env.DYNAMIC, type_ctx)
 
     def bind_constant(self, node: ast.Constant, visitor: TypeBinder) -> None:
         if type(node.value) is int:
@@ -1698,7 +1701,7 @@ class Class(Object["Class"]):
                 )
                 return False
             union = visitor.type_env.get_union((self, rtype))
-            visitor.set_type(node, union)
+            visitor.set_type(node, union, type_ctx)
             return True
 
         return super().bind_binop(node, visitor, type_ctx)
@@ -1780,7 +1783,7 @@ class Class(Object["Class"]):
         if not self.is_exact and not self.is_final:
             dynamic_call = True
 
-        visitor.set_type(node, self_type)
+        visitor.set_type(node, self_type, type_ctx)
         visitor.set_node_data(
             node, ClassCallInfo, ClassCallInfo(new_mapping, init_mapping, dynamic_call)
         )
@@ -2413,7 +2416,7 @@ class CType(Class):
         so we can write something like (explicit conversions):
         x = int32(int8(5))
         """
-        visitor.set_type(node, self.instance)
+        visitor.set_type(node, self.instance, type_ctx)
         for arg in node.args:
             visitor.visit(arg, self.instance)
         return NO_EFFECT
@@ -2525,7 +2528,7 @@ class NoneInstance(Object[NoneType]):
                 f"bad operand type for unary {UNARY_SYMBOLS[type(node.op)]}: 'NoneType'",
                 node,
             )
-        visitor.set_type(node, visitor.type_env.bool.instance)
+        visitor.set_type(node, visitor.type_env.bool.instance, type_ctx)
 
     def bind_binop(
         self, node: ast.BinOp, visitor: TypeBinder, type_ctx: Class | None
@@ -3658,7 +3661,7 @@ class Callable(Object[TClass]):
             descr_override=visitor.get_opt_node_data(node.func, TypeDescr),
         )
 
-        visitor.set_type(node, ret_type)
+        visitor.set_type(node, ret_type, type_ctx)
         visitor.set_node_data(node, ArgMapping, arg_mapping)
         return NO_EFFECT
 
@@ -3753,7 +3756,7 @@ class AwaitableInstance(Object[AwaitableType]):
     def bind_await(
         self, node: ast.Await, visitor: TypeBinder, type_ctx: Class | None
     ) -> None:
-        visitor.set_type(node, self.klass.type_args[0].instance)
+        visitor.set_type(node, self.klass.type_args[0].instance, type_ctx)
 
 
 class AwaitableTypeRef(TypeRef):
@@ -3975,7 +3978,7 @@ class Function(Callable[Class], FunctionContainer):
 
             store = ast.Name(tmp_name, ast.Store())
             copy_location(store, arg.argument)
-            visitor.set_type(store, visitor.get_type(arg.argument))
+            visitor.set_type(store, visitor.get_type(arg.argument), type_ctx)
             spills[tmp_name] = arg.argument, store
 
             replacement = ast.Name(tmp_name, ast.Load())
@@ -4220,7 +4223,7 @@ class StaticMethodInstanceBound(Object[Class]):
         arg_mapping = ArgMapping(self.function, node, visitor, self.target, node.args)
         arg_mapping.bind_args(visitor)
 
-        visitor.set_type(node, self.function.return_type.resolved().instance)
+        visitor.set_type(node, self.function.return_type.resolved().instance, type_ctx)
         visitor.set_node_data(node, ArgMapping, arg_mapping)
         return NO_EFFECT
 
@@ -4475,7 +4478,7 @@ class BoundClassMethod(Object[Class]):
         )
         arg_mapping.bind_args(visitor, skip_self=True)
 
-        visitor.set_type(node, self.function.return_type.resolved().instance)
+        visitor.set_type(node, self.function.return_type.resolved().instance, type_ctx)
         visitor.set_node_data(node, ArgMapping, arg_mapping)
         return NO_EFFECT
 
@@ -5052,7 +5055,7 @@ class NativeDecorator(Callable[Class]):
 
         # pyrefly: ignore [bad-assignment]
         self.lib_name = value
-        visitor.set_type(node, self)
+        visitor.set_type(node, self, type_ctx)
         return NO_EFFECT
 
     def resolve_decorate_function(
@@ -5367,7 +5370,7 @@ class DataclassDecorator(Callable[Class]):
         self, node: ast.Call, visitor: TypeBinder, type_ctx: Class | None
     ) -> NarrowingEffect:
         res = super().bind_call(node, visitor, type_ctx)
-        visitor.set_type(node, self)
+        visitor.set_type(node, self, type_ctx)
         return res
 
     def emit_decorator_call(
@@ -6568,7 +6571,7 @@ class BuiltinMethodDescriptor(Callable[Class]):
         elif node.keywords:
             return super().bind_call(node, visitor, type_ctx)
 
-        visitor.set_type(node, visitor.type_env.DYNAMIC)
+        visitor.set_type(node, visitor.type_env.DYNAMIC, type_ctx)
         for arg in node.args:
             visitor.visitExpectedType(
                 arg, visitor.type_env.DYNAMIC, CALL_ARGUMENT_CANNOT_BE_PRIMITIVE
@@ -6652,7 +6655,7 @@ class BuiltinMethod(Callable[Class]):
         if node.keywords:
             return Object.bind_call(self, node, visitor, type_ctx)
 
-        visitor.set_type(node, self.return_type.resolved().instance)
+        visitor.set_type(node, self.return_type.resolved().instance, type_ctx)
         visitor.visit(self.target)
         for arg in node.args:
             visitor.visitExpectedType(
@@ -6863,11 +6866,12 @@ class BoxFunction(Object[Class]):
                 if arg_type.constant == TYPED_BOOL
                 else self.klass.type_env.int.exact_type()
             )
-            visitor.set_type(node, typ.instance)
+            visitor.set_type(node, typ.instance, type_ctx)
         elif isinstance(arg_type, CDoubleInstance):
             visitor.set_type(
                 node,
                 self.klass.type_env.float.exact_type().instance,
+            type_ctx,
             )
         else:
             visitor.syntax_error(f"can't box non-primitive: {arg_type.name}", node)
@@ -6895,7 +6899,7 @@ class UnboxFunction(Object[Class]):
                 CALL_ARGUMENT_CANNOT_BE_PRIMITIVE,
             )
 
-        visitor.set_type(node, type_ctx or visitor.type_env.int64.instance)
+        visitor.set_type(node, type_ctx or visitor.type_env.int64.instance, type_ctx)
         return NO_EFFECT
 
     def emit_call(self, node: ast.Call, code_gen: StaticCodeGenBase) -> None:
@@ -7002,13 +7006,13 @@ class CRangeFunction(Object[Class]):
                     if arg_type.constant == TYPED_BOOL
                     else self.klass.type_env.int.exact_type()
                 )
-                visitor.set_type(node, typ.instance)
+                visitor.set_type(node, typ.instance, type_ctx)
             else:
                 visitor.syntax_error(
                     f"can't use crange with arg: {arg_type.name}", node
                 )
 
-        visitor.set_type(node, visitor.type_env.crange_iterator)
+        visitor.set_type(node, visitor.type_env.crange_iterator, type_ctx)
         return NO_EFFECT
 
     def emit_call(self, node: ast.Call, code_gen: StaticCodeGenBase) -> None:
@@ -7058,7 +7062,7 @@ class LenFunction(Object[Class]):
             else self.klass.type_env.int64.instance
         )
 
-        visitor.set_type(node, output_type)
+        visitor.set_type(node, output_type, type_ctx)
         return NO_EFFECT
 
     def emit_call(self, node: ast.Call, code_gen: StaticCodeGenBase) -> None:
@@ -7086,7 +7090,7 @@ class SortedFunction(Object[Class]):
                 kw.value, visitor.type_env.DYNAMIC, CALL_ARGUMENT_CANNOT_BE_PRIMITIVE
             )
 
-        visitor.set_type(node, self.klass.type_env.list.exact_type().instance)
+        visitor.set_type(node, self.klass.type_env.list.exact_type().instance, type_ctx)
         return NO_EFFECT
 
     def emit_call(self, node: ast.Call, code_gen: StaticCodeGenBase) -> None:
@@ -7233,7 +7237,7 @@ class IsInstanceFunction(Object[Class]):
                 arg, visitor.type_env.DYNAMIC, CALL_ARGUMENT_CANNOT_BE_PRIMITIVE
             )
 
-        visitor.set_type(node, self.klass.type_env.bool.instance)
+        visitor.set_type(node, self.klass.type_env.bool.instance, type_ctx)
         if len(node.args) == 2:
             arg0 = node.args[0]
             if not visitor.is_refinable(arg0):
@@ -7284,7 +7288,7 @@ class IsSubclassFunction(Object[Class]):
             visitor.visitExpectedType(
                 arg, visitor.type_env.DYNAMIC, CALL_ARGUMENT_CANNOT_BE_PRIMITIVE
             )
-        visitor.set_type(node, visitor.type_env.bool.instance)
+        visitor.set_type(node, visitor.type_env.bool.instance, type_ctx)
         return NO_EFFECT
 
 
@@ -7382,10 +7386,10 @@ class NumInstance(Object[NumClass]):
         self, node: ast.UnaryOp, visitor: TypeBinder, type_ctx: Class | None
     ) -> None:
         if isinstance(node.op, (ast.USub, ast.Invert, ast.UAdd)):
-            visitor.set_type(node, self)
+            visitor.set_type(node, self, type_ctx)
         else:
             assert isinstance(node.op, ast.Not)
-            visitor.set_type(node, self.klass.type_env.bool.instance)
+            visitor.set_type(node, self.klass.type_env.bool.instance, type_ctx)
 
     def exact(self) -> Value:
         if self.klass.pytype is int:
@@ -7432,11 +7436,13 @@ class NumExactInstance(NumInstance):
                 visitor.set_type(
                     node,
                     type_env.float.exact_type().instance,
+                    type_ctx,
                 )
             else:
                 visitor.set_type(
                     node,
                     int_exact.instance,
+                    type_ctx,
                 )
             return True
         return False
@@ -7788,6 +7794,7 @@ class TupleExactInstance(TupleInstance):
             visitor.set_type(
                 node,
                 self.klass.type_env.tuple.exact_type().instance,
+                type_ctx,
             )
             return True
         return super().bind_binop(node, visitor, type_ctx)
@@ -7803,6 +7810,7 @@ class TupleExactInstance(TupleInstance):
             visitor.set_type(
                 node,
                 self.klass.type_env.tuple.exact_type().instance,
+                type_ctx,
             )
             return True
         return super().bind_reverse_binop(node, visitor, type_ctx)
@@ -7847,9 +7855,9 @@ class SuperClass(Class):
     ) -> NarrowingEffect:
         super().bind_call(node, visitor, type_ctx)
         if len(node.args):
-            visitor.set_type(node, visitor.type_env.DYNAMIC)
+            visitor.set_type(node, visitor.type_env.DYNAMIC, type_ctx)
         else:
-            visitor.set_type(node, self.instance)
+            visitor.set_type(node, self.instance, type_ctx)
         return NO_EFFECT
 
 
@@ -7870,10 +7878,10 @@ class SuperInstance(Object[SuperClass]):
                     load = ast.Name(member.args[0].name, ast.Load())
                     copy_location(load, node.value)
                     method_type = SuperMethodType(base, load, member)
-                    visitor.set_type(node, method_type)
+                    visitor.set_type(node, method_type, type_ctx)
                     return
         super().bind_attr(node, visitor, type_ctx)
-        visitor.set_type(node, visitor.type_env.DYNAMIC)
+        visitor.set_type(node, visitor.type_env.DYNAMIC, type_ctx)
 
     def emit_attr(self, node: ast.Attribute, code_gen: StaticCodeGenBase) -> None:
         if isinstance(node.ctx, ast.Load) and code_gen._is_super_call(node.value):
@@ -7899,7 +7907,7 @@ class SuperMethodType(MethodType):
         # MethodType such that we can explicitly set the type to an exact type
         # instance after the general bind_call logic
         result = super().bind_call(node, visitor, type_ctx)
-        visitor.set_type(self.target, self.bound_type.instance)
+        visitor.set_type(self.target, self.bound_type.instance, type_ctx)
         return result
 
 
@@ -8055,7 +8063,7 @@ class ListInstance(Object[ListClass]):
     ) -> None:
         if type.klass not in visitor.type_env.signed_cint_types:
             super().bind_subscr(node, type, visitor)
-        visitor.set_type(node, visitor.type_env.DYNAMIC)
+        visitor.set_type(node, visitor.type_env.DYNAMIC, type_ctx)
 
     def emit_load_subscr(
         self, node: ast.Subscript, code_gen: StaticCodeGenBase
@@ -8111,6 +8119,7 @@ class ListExactInstance(ListInstance):
             visitor.set_type(
                 node,
                 self.klass.type_env.list.exact_type().instance,
+                type_ctx,
             )
             return True
         return super().bind_binop(node, visitor, type_ctx)
@@ -8126,6 +8135,7 @@ class ListExactInstance(ListInstance):
             visitor.set_type(
                 node,
                 self.klass.type_env.list.exact_type().instance,
+                type_ctx,
             )
             return True
         return super().bind_reverse_binop(node, visitor, type_ctx)
@@ -8297,7 +8307,7 @@ class BoolClass(Class):
             visitor.visit(arg)
             arg_type = visitor.get_type(arg)
             if isinstance(arg_type, CIntInstance) and arg_type.constant == TYPED_BOOL:
-                visitor.set_type(node, self.type_env.bool.instance)
+                visitor.set_type(node, self.type_env.bool.instance, type_ctx)
                 return NO_EFFECT
 
         return super().bind_call(node, visitor, type_ctx)
@@ -8605,7 +8615,7 @@ class UnionInstance(Object[UnionType]):
             visitor.syntax_error(f"{self.name}: {e.msg}", node)
 
         union = visitor.type_env.get_union(tuple(result_types))
-        visitor.set_type(node, union.instance)
+        visitor.set_type(node, union.instance, type_ctx)
         return ret_types
 
     def bind_attr(
@@ -8776,7 +8786,7 @@ class ArrayInstance(Object["ArrayClass"]):
         if type == self.klass.type_env.slice.instance:
             visitor.syntax_error("Static arrays cannot be sliced", node)
 
-        visitor.set_type(node, self.klass.index.instance)
+        visitor.set_type(node, self.klass.index.instance, type_ctx)
 
     def _supported_index(
         self, node: ast.Subscript, code_gen: StaticCodeGenBase
@@ -9009,7 +9019,7 @@ class CheckedDictInstance(Object[CheckedDict]):
         visitor.visitExpectedType(
             node.slice, self.klass.gen_name.args[0].instance, blame=node
         )
-        visitor.set_type(node, self.klass.gen_name.args[1].instance)
+        visitor.set_type(node, self.klass.gen_name.args[1].instance, type_ctx)
 
     def emit_load_subscr(
         self, node: ast.Subscript, code_gen: StaticCodeGenBase
@@ -9125,13 +9135,13 @@ class CheckedListInstance(Object[CheckedList]):
         type_ctx: Class | None = None,
     ) -> None:
         if type == self.klass.type_env.slice.instance:
-            visitor.set_type(node, self)
+            visitor.set_type(node, self, type_ctx)
         else:
             if type.klass not in self.klass.type_env.signed_cint_types:
                 visitor.visitExpectedType(
                     node.slice, self.klass.type_env.int.instance, blame=node
                 )
-            visitor.set_type(node, self.elem_type)
+            visitor.set_type(node, self.elem_type, type_ctx)
 
     def get_iter_type(self, node: ast.expr, visitor: TypeBinder) -> Value:
         return self.elem_type
@@ -9236,7 +9246,7 @@ class CastFunction(Object[Class]):
             visitor.syntax_error("cast to non-runtime type", node)
             cast_type = self.klass.type_env.dynamic
 
-        visitor.set_type(node, cast_type.instance)
+        visitor.set_type(node, cast_type.instance, type_ctx)
         return NO_EFFECT
 
     def emit_call(self, node: ast.Call, code_gen: StaticCodeGenBase) -> None:
@@ -9278,9 +9288,9 @@ class CInstance(Value, Generic[TClass]):
             node.left, self, self.binop_error("{}", "{}", node.op)
         )
         if isinstance(node.op, ast.Pow):
-            visitor.set_type(node, self.klass.type_env.double.instance)
+            visitor.set_type(node, self.klass.type_env.double.instance, type_ctx)
         else:
-            visitor.set_type(node, self)
+            visitor.set_type(node, self, type_ctx)
         return True
 
     def get_op_id(self, op: AST) -> int:
@@ -9443,8 +9453,8 @@ class CIntInstance(CInstance["CIntType"]):
             # Just set the op type to dynamic and the return type to bool for
             # now; when we have better support for generic containers we can
             # check for a sequence of the right type.
-            visitor.set_type(op, visitor.type_env.DYNAMIC)
-            visitor.set_type(node, self.klass.type_env.bool.instance)
+            visitor.set_type(op, visitor.type_env.DYNAMIC, type_ctx)
+            visitor.set_type(node, self.klass.type_env.bool.instance, type_ctx)
             return True
 
         rtype = visitor.get_type(right)
@@ -9456,8 +9466,8 @@ class CIntInstance(CInstance["CIntType"]):
             isinstance(other, CIntInstance) and other.constant == TYPED_BOOL
         )
         if comparing_cbools:
-            visitor.set_type(op, self.klass.type_env.cbool.instance)
-            visitor.set_type(node, self.klass.type_env.cbool.instance)
+            visitor.set_type(op, self.klass.type_env.cbool.instance, type_ctx)
+            visitor.set_type(node, self.klass.type_env.cbool.instance, type_ctx)
             return True
 
         compare_type = self.validate_mixed_math(other)
@@ -9467,8 +9477,8 @@ class CIntInstance(CInstance["CIntType"]):
             )
             compare_type = visitor.type_env.DYNAMIC
 
-        visitor.set_type(op, compare_type)
-        visitor.set_type(node, self.klass.type_env.cbool.instance)
+        visitor.set_type(op, compare_type, type_ctx)
+        visitor.set_type(node, self.klass.type_env.cbool.instance, type_ctx)
         return True
 
     def bind_reverse_compare(
@@ -9483,8 +9493,8 @@ class CIntInstance(CInstance["CIntType"]):
         assert not isinstance(visitor.get_type(left), CIntInstance)
         visitor.visitExpectedType(left, self)
 
-        visitor.set_type(op, self)
-        visitor.set_type(node, self.klass.type_env.cbool.instance)
+        visitor.set_type(op, self, type_ctx)
+        visitor.set_type(node, self.klass.type_env.cbool.instance, type_ctx)
         return True
 
     def emit_compare(self, op: cmpop, code_gen: StaticCodeGenBase) -> None:
@@ -9550,7 +9560,7 @@ class CIntInstance(CInstance["CIntType"]):
                 rinst.klass == self.klass.type_env.list.exact_type()
                 or rinst.klass == self.klass.type_env.tuple.exact_type()
             ):
-                visitor.set_type(node, rinst.klass.instance)
+                visitor.set_type(node, rinst.klass.instance, type_ctx)
                 return True
 
             visitor.visit(node.right, type_ctx or visitor.type_env.int64.instance)
@@ -9588,10 +9598,10 @@ class CIntInstance(CInstance["CIntType"]):
                 self.binop_error("{1}", "{0}", node.op),
             )
         if isinstance(node.op, ast.Pow):
-            visitor.set_type(node, self.klass.type_env.double.instance)
+            visitor.set_type(node, self.klass.type_env.double.instance, type_ctx)
         else:
             # pyrefly: ignore [bad-argument-type]
-            visitor.set_type(node, type_ctx)
+            visitor.set_type(node, type_ctx, type_ctx)
         return True
 
     def emit_box(self, code_gen: StaticCodeGenBase) -> None:
@@ -9615,10 +9625,10 @@ class CIntInstance(CInstance["CIntType"]):
         self, node: ast.UnaryOp, visitor: TypeBinder, type_ctx: Class | None
     ) -> None:
         if isinstance(node.op, (ast.USub, ast.Invert, ast.UAdd)):
-            visitor.set_type(node, self)
+            visitor.set_type(node, self, type_ctx)
         else:
             assert isinstance(node.op, ast.Not)
-            visitor.set_type(node, self.klass.type_env.cbool.instance)
+            visitor.set_type(node, self.klass.type_env.cbool.instance, type_ctx)
 
     def emit_unaryop(self, node: ast.UnaryOp, code_gen: StaticCodeGenBase) -> None:
         code_gen.set_pos(node)
@@ -9703,7 +9713,7 @@ class CIntType(CType):
 
         # This can be used as a cast operator on primitive ints int64(uint64),
         # so we don't pass the type context.
-        visitor.set_type(node, self.instance)
+        visitor.set_type(node, self.instance, type_ctx)
         arg = node.args[0]
         if isinstance(arg, ast.Constant):
             # for numeric literals, set the type context to self.instance,
@@ -9796,7 +9806,7 @@ class CDoubleInstance(CInstance["CDoubleType"]):
         self, node: ast.UnaryOp, visitor: TypeBinder, type_ctx: Class | None
     ) -> None:
         if isinstance(node.op, (ast.USub, ast.UAdd)):
-            visitor.set_type(node, self)
+            visitor.set_type(node, self, type_ctx)
         else:
             visitor.syntax_error("Cannot invert/not a double", node)
 
@@ -9827,8 +9837,8 @@ class CDoubleInstance(CInstance["CDoubleType"]):
             else:
                 visitor.syntax_error(f"can't compare {self.name} to {rtype.name}", node)
 
-        visitor.set_type(op, self)
-        visitor.set_type(node, self.klass.type_env.cbool.instance)
+        visitor.set_type(op, self, type_ctx)
+        visitor.set_type(node, self.klass.type_env.cbool.instance, type_ctx)
         return True
 
     def bind_reverse_compare(
@@ -9847,8 +9857,8 @@ class CDoubleInstance(CInstance["CDoubleType"]):
             else:
                 visitor.syntax_error(f"can't compare {self.name} to {ltype.name}", node)
 
-            visitor.set_type(op, self)
-            visitor.set_type(node, self.klass.type_env.cbool.instance)
+            visitor.set_type(op, self, type_ctx)
+            visitor.set_type(node, self.klass.type_env.cbool.instance, type_ctx)
             return True
 
         return False
@@ -9870,7 +9880,7 @@ class CDoubleInstance(CInstance["CDoubleType"]):
                 self.binop_error("{}", "{}", node.op),
             )
 
-        visitor.set_type(node, self)
+        visitor.set_type(node, self, type_ctx)
         return True
 
     def bind_constant(self, node: ast.Constant, visitor: TypeBinder) -> None:
@@ -9921,7 +9931,7 @@ class CDoubleType(CType):
                 f"{self.name} requires a single argument ({len(node.args)} given)", node
             )
 
-        visitor.set_type(node, self.instance)
+        visitor.set_type(node, self.instance, type_ctx)
         arg = node.args[0]
         visitor.visit(arg, self.instance)
         arg_type = visitor.get_type(arg)
@@ -10327,7 +10337,7 @@ class EnumType(Class):
             )
 
         if inst := self.values.get(node.attr):
-            visitor.set_type(node, inst)
+            visitor.set_type(node, inst, type_ctx)
             return
 
         super().bind_attr(node, visitor, type_ctx)
@@ -10340,7 +10350,7 @@ class EnumType(Class):
                 f"{self.name} requires a single argument ({len(node.args)} given)", node
             )
 
-        visitor.set_type(node, self.instance)
+        visitor.set_type(node, self.instance, type_ctx)
         arg = node.args[0]
         visitor.visitExpectedType(
             arg, visitor.type_env.DYNAMIC, CALL_ARGUMENT_CANNOT_BE_PRIMITIVE
@@ -10401,11 +10411,11 @@ class EnumInstance(Object[EnumType]):
             visitor.syntax_error("Enum values cannot be modified or deleted", node)
 
         if node.attr == "name":
-            visitor.set_type(node, visitor.type_env.str.exact_type().instance)
+            visitor.set_type(node, visitor.type_env.str.exact_type().instance, type_ctx)
             return
         if node.attr == "value":
             assert self.value is not None
-            visitor.set_type(node, self.value)
+            visitor.set_type(node, self.value, type_ctx)
             return
 
         super().bind_attr(node, visitor, type_ctx)

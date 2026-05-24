@@ -74,7 +74,7 @@ class StrictBuiltins(Object[Class]):
                 if builtin is not None:
                     type = builtin
 
-        visitor.set_type(node, type)
+        visitor.set_type(node, type, type_ctx)
 
 
 class Compiler:
