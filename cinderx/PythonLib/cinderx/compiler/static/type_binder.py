@@ -693,12 +693,17 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         self,
         node: AST,
         type: Value,
-        node_ctx_value: Value | None = None,
+        expr_ctx_types: Value | None = None,
     ) -> None:
         self.module.types[node] = type
-        if isinstance(node, ast.expr) and not isinstance(type or node_ctx_value, Class):
-            self.module.node_value[node] = type or node_ctx_value
-            self.module.node_ctx_value[node] = node_ctx_value or type
+
+        #filter expressions (kinda) and also filter calls which resolve to constructors
+        # `name()` and type of name resolves to type of name is Class is a constructor
+        # pretty sure names are the only thing that can do this. if not, come back and
+        # filter be node instance Name too.
+        if isinstance(node, ast.expr) and not isinstance(type or expr_ctx_types, Class):
+            self.module.expr_types[node] = type or expr_ctx_types
+            self.module.expr_ctx_types[node] = expr_ctx_types or type
 
     def get_type(self, node: AST) -> Value:
         if self.nodes_default_dynamic:

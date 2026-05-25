@@ -278,8 +278,33 @@ class ModuleTable:
             self._children.update(members)
         self.compiler = compiler
         self.types: dict[AST, Value] = {}
-        self.node_ctx_value: dict[AST, Value | None] = {}
-        self.node_value: dict[AST, Value | None] = {}
+
+        ## fields for detyper \-/
+
+        # expr collection
+        self.expr_ctx_types: dict[AST, Value | None] = {}
+        self.expr_types: dict[AST, Value | None] = {}
+
+        # maps linked items with annos
+        # methods linked (return anno linked)
+        # method params linked
+        # attr __init__ lhs
+        self.components: dict[AST, set[AST]] = {}
+
+        # reads (anno is expr type)
+        # - var reads (local uses, global uses, member uses)
+        # - param reads (method param uses, function param uses)
+        # - return value reads (method calls, function calls)
+        self.reads: dict[AST, set[AST]] = {}
+
+        # writes (anno is expr ctx type)
+        # - var writes (local rhs, global rhs, member rhs)
+        # - param writes (method param args, function param args)
+        # - return writes reads (method returned expr, function returned expr)
+        self.writes: dict[AST, set[AST]] = {}
+
+        ## fields for detyper /-\
+
         self.node_data: dict[tuple[AST, object], object] = {}
         self.flags: set[ModuleFlag] = set()
         self.decls: list[tuple[AST, str | None, Value | None]] = []
