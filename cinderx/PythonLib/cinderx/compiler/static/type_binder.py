@@ -72,6 +72,7 @@ from .module_table import ModuleFlag, ModuleTable
 from .types import (
     access_path,
     BoolClass,
+    BoundClassMethod,
     Callable,
     CheckedDictInstance,
     CheckedListInstance,
@@ -96,6 +97,7 @@ from .types import (
     resolve_assign_error_msg,
     resolve_instance_attr_by_name,
     Slot,
+    StaticMethodInstanceBound,
     TMP_VAR_PREFIX,
     TransientDecoratedMethod,
     TransparentDecoratedMethod,
@@ -142,6 +144,8 @@ class BindingScope:
         self.node = node
         self.type_state = TypeState()
         self.decl_types: dict[str, TypeDeclaration] = {}
+        # for detyper, store declaration nodes next to types so that expression type source can be found for Names
+        self.decl_nodes: dict[str, AST] = {}
         self.type_env: TypeEnvironment = type_env
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             self.name = node.name
@@ -404,6 +408,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         typ: Value,
         is_final: bool = False,
         is_inferred: bool = False,
+        node: AST | None = None,
     ) -> None:
         if name in self.decl_types and (
             typ.is_nominal_type or self.decl_types[name].type.is_nominal_type
@@ -415,6 +420,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         self.binding_scope.declare(
             name, typ, is_final=is_final, is_inferred=is_inferred
         )
+        self.binding_scope.decl_nodes.setdefault(name, node)
 
     def check_static_import_flags(self, node: Module) -> None:
         saw_doc_str = False
@@ -460,6 +466,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         scope: BindingScope,
     ) -> None:
         scope.declare(arg.arg, arg_type)
+        scope.decl_nodes[arg.arg] = arg
         self.set_type(arg, arg_type)
 
     def _visitParameters(self, args: ast.arguments, scope: BindingScope) -> None:
@@ -626,7 +633,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                 ).instance
             else:
                 typ = self.type_env.DYNAMIC
-        self.declare_local(node.name, typ)
+        self.declare_local(node.name, typ, node=node)
 
     def visitFunctionDef(self, node: FunctionDef) -> None:
         self._visitFunc(node)
@@ -675,7 +682,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
 
             self.scopes.pop()
 
-        self.declare_local(node.name, res)
+        self.declare_local(node.name, res, node=node)
 
     # pyre-ignore[11]: Annotation `NodeWithTypeParams` is not defined as a type
     def _visitTypeParams(self, node: NodeWithTypeParams) -> None:
@@ -817,7 +824,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                     self.visit(value)
                     declared_type = self.get_type(value)
 
-            self.declare_local(target.id, declared_type, is_final)
+            self.declare_local(target.id, declared_type, is_final, node=target)
             self.set_type(target, declared_type)
 
         with self.in_target():
@@ -829,6 +836,10 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                 value = scope_type.bind_field(target.id, value, self)
         if value:
             self.visitExpectedType(value, declared_type)
+            if isinstance(target, Name):
+                self.module.writes.setdefault(target, set()).add(value)
+            else:
+                self.add_attr_write(target, value)
             if not is_dynamic_final:
                 if isinstance(target, Name):
                     # We could be narrowing the type after the assignment, so we update it here
@@ -843,6 +854,15 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         self.visit(node.target)
         target_type = self.get_type(node.target).inexact()
         self.visit(node.value, target_type)
+        if isinstance(node.target, Name):
+            decl_node = self.get_target_decl_node(node.target.id)
+            self.module.reads.setdefault(decl_node, set()).add(node.target)
+            self.module.writes.setdefault(decl_node, set()).add(node.value)
+        elif isinstance(node.target, Attribute):
+            slot = self.get_type(node.target.value).klass.find_slot(node.target)
+            if slot is not None and slot.assignment is not None:
+                self.module.reads.setdefault(slot.assignment, set()).add(node.target)
+            self.add_attr_write(node.target, node.value)
         self.set_type(node, target_type)
 
     @contextmanager
@@ -863,7 +883,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         target_type = self.get_type(target)
         self.visit(node.value, target_type)
         value_type = self.get_type(node.value)
-        self.assign_value(target, value_type)
+        self.assign_value(target, value_type, src=node.value)
         self.set_type(node, self.get_type(target), type_ctx)
         return self.refine_truthy(node.target)
 
@@ -1281,20 +1301,34 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                 decl_type = self.scopes[0].decl_types.get(name)
         return decl_type
 
+    # detyper helpers for decl tracking
+    def get_target_decl_node(self, name: str) -> AST | None:
+        if node := self.binding_scope.decl_nodes.get(name):
+            return node
+        elif self.get_var_scope(name) in (SC_GLOBAL_EXPLICIT, SC_GLOBAL_IMPLICIT):
+            return self.scopes[0].decl_nodes.get(name)
+
+    def add_attr_write(self, target: Attribute, src: AST | None = None) -> None:
+        if slot := self.get_type(target.value).klass.find_slot(target):
+            self.module.writes.setdefault(slot.assignment, set()).add(src or target)
+
     def assign_name(
         self,
         target: AST,
         name: str,
         value: Value,
+        src: AST | None = None,
     ) -> None:
         decl_type = self.get_target_decl(name)
         if decl_type is None:
-            self.declare_local(name, value, is_inferred=True)
+            self.declare_local(name, value, is_inferred=True, node=target)
         else:
             if decl_type.is_final:
                 self.syntax_error("Cannot assign to a Final variable", target)
             self.check_can_assign_from(decl_type.type.klass, value.klass, target)
 
+        if decl_node := self.get_target_decl_node(name):
+            self.module.writes.setdefault(decl_node, set()).add(src or target)
         local_type = self.maybe_set_local_type(name, value)
         self.set_type(target, local_type)
 
@@ -1306,7 +1340,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         assignment: AST | None = None,
     ) -> None:
         if isinstance(target, Name):
-            self.assign_name(target, target.id, value)
+            self.assign_name(target, target.id, value, src)
         elif isinstance(target, (ast.Tuple, ast.List)):
             if isinstance(src, (ast.Tuple, ast.List)) and len(target.elts) == len(
                 src.elts
@@ -1331,6 +1365,8 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                     self.assign_value(val, self.type_env.DYNAMIC)
         else:
             self.check_can_assign_from(self.get_type(target).klass, value.klass, target)
+            if isinstance(target, Attribute):
+                self.add_attr_write(target, src)
         self._check_final_attribute_reassigned(target, assignment)
 
     def visitDictComp(
@@ -1508,7 +1544,13 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
 
     def visitCall(self, node: Call, type_ctx: Class | None = None) -> NarrowingEffect:
         self.visit(node.func)
-        return self.get_type(node.func).bind_call(node, self, type_ctx)
+        func = self.get_type(node.func)
+        res = func.bind_call(node, self, type_ctx)
+        if isinstance(func, (BoundClassMethod, MethodType, StaticMethodInstanceBound)):
+            func = func.function
+        if isinstance(func, Function):
+            self.module.reads.setdefault(func.node, set()).add(node)
+        return res
 
     def visitFormattedValue(
         self, node: FormattedValue, type_ctx: Class | None = None
@@ -1577,6 +1619,10 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                     # attr.
                     del self.type_state.refined_fields[value.id][node.attr]
 
+        # dont include writes
+        if isinstance(node.ctx, ast.Load):
+            if slot := base.klass.find_slot(node):
+                self.module.reads.setdefault(slot.assignment, set()).add(node)
         if isinstance(base, ModuleInstance):
             self.set_node_data(node, TypeDescr, ((base.module_name,), node.attr))
         if self.is_refinable(node):
@@ -1659,6 +1705,12 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         if not found_name:
             raise TypedSyntaxError(f"Name `{node.id}` is not defined.")
 
+        if isinstance(node.ctx, ast.Load) and not self.visiting_assignment_target:
+            if decl_node := self.get_target_decl_node(node.id):
+                # functions handled at the call visitor
+                if not isinstance(decl_node, (FunctionDef, AsyncFunctionDef, ClassDef)):
+                    self.module.reads.setdefault(decl_node, set()).add(node)
+
         if (effect := self.refine_truthy(node)) is not None:
             return effect
 
@@ -1734,6 +1786,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                 expected = function.get_expected_return()
 
             self.visit(value, expected)
+            self.module.writes.setdefault(func, set()).add(value)
             returned = self.get_type(value).klass
             if (
                 returned is not self.type_env.dynamic
@@ -1951,6 +2004,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         branch: LocalsBranch | None = None
         counter = 0
         entry_decls = self.decl_types.copy()
+        entry_decl_nodes = self.binding_scope.decl_nodes.copy()
         while (not branch) or branch.changed():
             branch = self.binding_scope.branch()
             counter += 1
@@ -1970,6 +2024,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                 self.visit_check_terminal(body)
                 # reset any declarations from the loop body to avoid redeclaration errors
                 self.binding_scope.decl_types = entry_decls.copy()
+                self.binding_scope.decl_nodes = entry_decl_nodes.copy()
             branch.merge()
 
     @contextmanager

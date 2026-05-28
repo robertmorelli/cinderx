@@ -1948,6 +1948,25 @@ class Class(Object["Class"]):
                     base_value = base.members.get(name)
                     if base_value is not None:
                         self.check_incompatible_override(my_value, base_value, module)
+                    # kinda a dookie check for init. whateva
+                    # TODO: make sure this handles all arg forms correctly
+                    if isinstance(my_value, Function) and isinstance(base_value, Function) and my_value.node.name != "__init__" and my_value.node.name != "__new__":
+                        if my_value.node.returns and base_value.node.returns:
+                            module.components.setdefault(my_value.node.returns, set()).add(base_value.node.returns)
+                            module.components.setdefault(base_value.node.returns, set()).add(my_value.node.returns)
+
+                        for o_arg, i_arg in zip(my_value.node.args.args[1:], base_value.node.args.args[1:]):
+                            module.components.setdefault(o_arg, set()).add(i_arg)
+                            module.components.setdefault(i_arg, set()).add(o_arg)
+
+
+                    if isinstance(base_value, Slot) and isinstance(my_value, Slot):
+                        if (isinstance(my_value.assignment, ast.AnnAssign)
+                    and isinstance(base_value.assignment, ast.AnnAssign)):
+                            base_ast_node = base_value.assignment
+                            my_ast_node = my_value.assignment
+                            module.components.setdefault(base_ast_node, set()).add(my_ast_node)
+                            module.components.setdefault(my_ast_node, set()).add(base_ast_node)
 
                     if isinstance(base_value, Slot) and isinstance(my_value, Slot):
                         # use the base class slot
@@ -2909,14 +2928,19 @@ class ArgMapping:
         )
 
         if resolved_type.contains_generic_parameters:
-            return self._visit_generic_arg(resolved_type, arg, desc)
+            resolved_type = self._visit_generic_arg(resolved_type, arg, desc)
+        else:
+            expected = resolved_type.instance
+            visitor.visitExpectedType(
+                arg,
+                expected,
+                f"type mismatch: {{}} received for {desc}, expected {{}}",
+            )
 
-        expected = resolved_type.instance
-        visitor.visitExpectedType(
-            arg,
-            expected,
-            f"type mismatch: {{}} received for {desc}, expected {{}}",
-        )
+        if isinstance(self.callable, Function):
+            args = self.callable.node.args
+            params = args.posonlyargs + args.args + args.kwonlyargs
+            visitor.module.writes.setdefault(params[param.index], set()).add(arg)
 
         return resolved_type
 
