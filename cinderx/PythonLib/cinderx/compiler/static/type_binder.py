@@ -824,7 +824,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                     self.visit(value)
                     declared_type = self.get_type(value)
 
-            self.declare_local(target.id, declared_type, is_final, node=target)
+            self.declare_local(target.id, declared_type, is_final, node=node)
             self.set_type(target, declared_type)
 
         with self.in_target():
@@ -837,7 +837,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         if value:
             self.visitExpectedType(value, declared_type)
             if isinstance(target, Name):
-                self.module.writes.setdefault(target, set()).add(value)
+                self.module.writes.setdefault(node, set()).add(value)
             else:
                 self.add_attr_write(target, value)
             if not is_dynamic_final:
