@@ -2940,7 +2940,7 @@ class ArgMapping:
         if isinstance(self.callable, Function):
             args = self.callable.node.args
             params = args.posonlyargs + args.args + args.kwonlyargs
-            visitor.module.writes.setdefault(params[param.index], set()).add(arg)
+            visitor.module.add_inflow(params[param.index], arg)
 
         return resolved_type
 
