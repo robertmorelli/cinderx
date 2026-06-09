@@ -291,17 +291,19 @@ class ModuleTable:
         # attr __init__ lhs
         self.components: dict[AST, set[AST]] = {}
 
-        # reads (anno is expr type)
+        # outflow (anno is expr type)
         # - var reads (local uses, global uses, member uses)
         # - param reads (method param uses, function param uses)
-        # - return value reads (method calls, function calls)
-        self.reads: dict[AST, set[AST]] = {}
+        # - return value uses (method calls, function calls)
+        self.outflow: dict[AST, set[AST]] = {}
+        self.reverse_outflow: dict[AST, AST] = {}
 
-        # writes (anno is expr ctx type)
+        # inflow (anno is expr ctx type)
         # - var writes (local rhs, global rhs, member rhs)
-        # - param writes (method param args, function param args)
-        # - return writes reads (method returned expr, function returned expr)
-        self.writes: dict[AST, set[AST]] = {}
+        # - arguments to a parameter (method param args, function param args)
+        # - returned expressions (method returned expr, function returned expr)
+        self.inflow: dict[AST, set[AST]] = {}
+        self.reverse_inflow: dict[AST, AST] = {}
 
         ## fields for detyper /-\
 
@@ -309,6 +311,7 @@ class ModuleTable:
         self.flags: set[ModuleFlag] = set()
         self.decls: list[tuple[AST, str | None, Value | None]] = []
         self.implicit_decl_names: set[str] = set()
+        self.global_decl_nodes: dict[str, AST] = {}
         self.type_alias_names: set[str] = set()
         self.compile_non_static: set[AST] = set()
         # {local-name: {(mod, qualname)}} for decl-time deps
@@ -332,6 +335,14 @@ class ModuleTable:
         # modules (the qualname of a class or function is within-module, it
         # doesn't include the module name)
         self.qualname: None = None
+
+    def add_inflow(self, decl, node):
+        self.inflow.setdefault(decl, set()).add(node)
+        self.reverse_inflow[node] = decl
+
+    def add_outflow(self, decl, node):
+        self.outflow.setdefault(decl, set()).add(node)
+        self.reverse_outflow[node] = decl
 
     def __repr__(self) -> str:
         return f"<ModuleTable {self.name}>"
@@ -629,6 +640,8 @@ class ModuleTable:
 
     def declare_variable(self, node: ast.AnnAssign, module: ModuleTable) -> None:
         self.decls.append((node, None, None))
+        if isinstance(node.target, ast.Name):
+            self.global_decl_nodes[node.target.id] = node
 
     def declare_variables(self, node: ast.Assign, module: ModuleTable) -> None:
         targets = node.targets
