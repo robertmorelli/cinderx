@@ -81,6 +81,7 @@ from .types import (
     ClassVar,
     CType,
     Dataclass,
+    DecoratedMethod,
     EnumType,
     FinalClass,
     Function,
@@ -837,7 +838,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         if value:
             self.visitExpectedType(value, declared_type)
             if isinstance(target, Name):
-                self.module.writes.setdefault(node, set()).add(value)
+                self.module.add_inflow(node, value)
             else:
                 self.add_attr_write(target, value)
             if not is_dynamic_final:
@@ -856,12 +857,12 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         self.visit(node.value, target_type)
         if isinstance(node.target, Name):
             decl_node = self.get_target_decl_node(node.target.id)
-            self.module.reads.setdefault(decl_node, set()).add(node.target)
-            self.module.writes.setdefault(decl_node, set()).add(node.value)
+            self.module.add_outflow(decl_node, node.target)
+            self.module.add_inflow(decl_node, node.value)
         elif isinstance(node.target, Attribute):
             slot = self.get_type(node.target.value).klass.find_slot(node.target)
             if slot is not None and slot.assignment is not None:
-                self.module.reads.setdefault(slot.assignment, set()).add(node.target)
+                self.module.add_outflow(slot.assignment, node.target)
             self.add_attr_write(node.target, node.value)
         self.set_type(node, target_type)
 
@@ -1306,11 +1307,12 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         if node := self.binding_scope.decl_nodes.get(name):
             return node
         elif self.get_var_scope(name) in (SC_GLOBAL_EXPLICIT, SC_GLOBAL_IMPLICIT):
-            return self.scopes[0].decl_nodes.get(name)
+            return self.scopes[0].decl_nodes.get(name) or self.module.global_decl_nodes.get(name)
 
     def add_attr_write(self, target: Attribute, src: AST | None = None) -> None:
         if slot := self.get_type(target.value).klass.find_slot(target):
-            self.module.writes.setdefault(slot.assignment, set()).add(src or target)
+            # TODO: re-evaluate why this is doing src or target. maybe link both?
+            self.module.add_inflow(slot.assignment, src or target)
 
     def assign_name(
         self,
@@ -1328,7 +1330,8 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
             self.check_can_assign_from(decl_type.type.klass, value.klass, target)
 
         if decl_node := self.get_target_decl_node(name):
-            self.module.writes.setdefault(decl_node, set()).add(src or target)
+            # TODO: re-evaluate why this is doing src or target. maybe link both?
+            self.module.add_inflow(decl_node, src or target)
         local_type = self.maybe_set_local_type(name, value)
         self.set_type(target, local_type)
 
@@ -1546,10 +1549,12 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         self.visit(node.func)
         func = self.get_type(node.func)
         res = func.bind_call(node, self, type_ctx)
+        while isinstance(func, DecoratedMethod):
+            func = func.function
         if isinstance(func, (BoundClassMethod, MethodType, StaticMethodInstanceBound)):
             func = func.function
         if isinstance(func, Function):
-            self.module.reads.setdefault(func.node, set()).add(node)
+            self.module.add_outflow(func.node, node)
         return res
 
     def visitFormattedValue(
@@ -1622,7 +1627,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         # dont include writes
         if isinstance(node.ctx, ast.Load):
             if slot := base.klass.find_slot(node):
-                self.module.reads.setdefault(slot.assignment, set()).add(node)
+                self.module.add_outflow(slot.assignment, node)
         if isinstance(base, ModuleInstance):
             self.set_node_data(node, TypeDescr, ((base.module_name,), node.attr))
         if self.is_refinable(node):
@@ -1648,6 +1653,8 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         self.visit(node.slice)
         val_type = self.get_type(node.value)
         val_type.bind_subscr(node, self.get_type(node.slice), self, type_ctx)
+        if value_inflow := self.module.reverse_outflow.get(node.value):
+            self.module.add_inflow(value_inflow, node.slice)
         return NO_EFFECT
 
     def visitStarred(
@@ -1709,7 +1716,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
             if decl_node := self.get_target_decl_node(node.id):
                 # functions handled at the call visitor
                 if not isinstance(decl_node, (FunctionDef, AsyncFunctionDef, ClassDef)):
-                    self.module.reads.setdefault(decl_node, set()).add(node)
+                    self.module.add_outflow(decl_node, node)
 
         if (effect := self.refine_truthy(node)) is not None:
             return effect
@@ -1786,7 +1793,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                 expected = function.get_expected_return()
 
             self.visit(value, expected)
-            self.module.writes.setdefault(func, set()).add(value)
+            self.module.add_inflow(func, value)
             returned = self.get_type(value).klass
             if (
                 returned is not self.type_env.dynamic
