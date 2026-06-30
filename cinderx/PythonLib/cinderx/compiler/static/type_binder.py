@@ -709,9 +709,12 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         # `name()` and type of name resolves to type of name is Class is a constructor
         # pretty sure names are the only thing that can do this. if not, come back and
         # filter be node instance Name too.
-        if isinstance(node, ast.expr) and not isinstance(type or expr_ctx_types, Class):
-            self.module.expr_types[node] = type or expr_ctx_types
-            self.module.expr_ctx_types[node] = expr_ctx_types or type
+        if isinstance(node, expr):
+            if not isinstance(type or expr_ctx_types, Class):
+                self.module.expr_types[node] = type or expr_ctx_types
+                self.module.expr_ctx_types[node] = expr_ctx_types or type
+            else:
+                self.module.constructors[node] = type or expr_ctx_types
 
     def get_type(self, node: AST) -> Value:
         if self.nodes_default_dynamic:
@@ -857,12 +860,11 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         self.visit(node.value, target_type)
         if isinstance(node.target, Name):
             decl_node = self.get_target_decl_node(node.target.id)
-            self.module.add_outflow(decl_node, node.target)
             self.module.add_inflow(decl_node, node.value)
         elif isinstance(node.target, Attribute):
             slot = self.get_type(node.target.value).klass.find_slot(node.target)
             if slot is not None and slot.assignment is not None:
-                self.module.add_outflow(slot.assignment, node.target)
+                self.module.add_inflow(slot.assignment, node.value)
             self.add_attr_write(node.target, node.value)
         self.set_type(node, target_type)
 
@@ -1370,6 +1372,9 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
             self.check_can_assign_from(self.get_type(target).klass, value.klass, target)
             if isinstance(target, Attribute):
                 self.add_attr_write(target, src)
+            elif isinstance(target, Subscript):
+                if value_inflow := self.module.reverse_outflow.get(target.value):
+                    self.module.add_inflow(value_inflow, src or target)
         self._check_final_attribute_reassigned(target, assignment)
 
     def visitDictComp(
@@ -1555,6 +1560,12 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
             func = func.function
         if isinstance(func, Function):
             self.module.add_outflow(func.node, node)
+        fn = node.func
+        if isinstance(fn, ast.Attribute) and (decl := self.module.reverse_outflow.get(fn.value)):
+            if fn.attr == "append" and node.args:
+                self.module.add_inflow(decl, node.args[0])
+            elif fn.attr == "pop":
+                self.module.add_outflow(decl, node)
         return res
 
     def visitFormattedValue(
@@ -1654,7 +1665,11 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         val_type = self.get_type(node.value)
         val_type.bind_subscr(node, self.get_type(node.slice), self, type_ctx)
         if value_inflow := self.module.reverse_outflow.get(node.value):
-            self.module.add_inflow(value_inflow, node.slice)
+            if isinstance(node.ctx, ast.Load):
+                self.module.add_outflow(value_inflow, node)
+            slc = node.slice
+            for part in (slc.lower, slc.upper, slc.step) if isinstance(slc, ast.Slice) else (slc,):
+                if part: self.module.add_inflow(value_inflow, part)
         return NO_EFFECT
 
     def visitStarred(

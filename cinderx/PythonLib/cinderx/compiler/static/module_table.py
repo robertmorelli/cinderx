@@ -284,6 +284,7 @@ class ModuleTable:
         # expr collection
         self.expr_ctx_types: dict[AST, Value | None] = {}
         self.expr_types: dict[AST, Value | None] = {}
+        self.constructors: dict[AST, Class | None] = {}
 
         # maps linked items with annos
         # methods linked (return anno linked)
