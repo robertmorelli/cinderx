@@ -1952,8 +1952,8 @@ class Class(Object["Class"]):
                     # TODO: make sure this handles all arg forms correctly
                     if isinstance(my_value, Function) and isinstance(base_value, Function) and my_value.node.name != "__init__" and my_value.node.name != "__new__":
                         if my_value.node.returns and base_value.node.returns:
-                            module.components.setdefault(my_value.node.returns, set()).add(base_value.node.returns)
-                            module.components.setdefault(base_value.node.returns, set()).add(my_value.node.returns)
+                            module.components.setdefault(my_value.node, set()).add(base_value.node)
+                            module.components.setdefault(base_value.node, set()).add(my_value.node)
 
                         for o_arg, i_arg in zip(my_value.node.args.args[1:], base_value.node.args.args[1:]):
                             module.components.setdefault(o_arg, set()).add(i_arg)

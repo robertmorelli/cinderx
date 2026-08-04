@@ -284,6 +284,7 @@ class ModuleTable:
         # expr collection
         self.expr_ctx_types: dict[AST, Value | None] = {}
         self.expr_types: dict[AST, Value | None] = {}
+        self.declared_types: dict[AST, Value] = {}
         self.constructors: dict[AST, Class | None] = {}
 
         # maps linked items with annos
@@ -338,10 +339,14 @@ class ModuleTable:
         self.qualname: None = None
 
     def add_inflow(self, decl, node):
+        if isinstance(decl, ast.arg) and decl.arg == "self":
+            return  # `self` is never detyped: keep it out of the flow graph
         self.inflow.setdefault(decl, set()).add(node)
         self.reverse_inflow[node] = decl
 
     def add_outflow(self, decl, node):
+        if isinstance(decl, ast.arg) and decl.arg == "self":
+            return  # `self` is never detyped: keep it out of the flow graph
         self.outflow.setdefault(decl, set()).add(node)
         self.reverse_outflow[node] = decl
 

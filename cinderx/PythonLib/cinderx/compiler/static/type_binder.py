@@ -1284,7 +1284,11 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
     def visitListComp(
         self, node: ListComp, type_ctx: Class | None = None
     ) -> NarrowingEffect:
-        self.visit_comprehension(node, node.generators, node.elt)
+        elem = (type_ctx.klass.type_args[0].instance
+                if type_ctx is not None
+                and type_ctx.klass.generic_type_def is self.type_env.checked_list
+                else None)
+        self.visit_comprehension(node, node.generators, node.elt, expected=elem)
         item_type = self.get_type(node.elt)
         self.set_list_type(node, item_type, type_ctx)
         return NO_EFFECT
@@ -1330,12 +1334,16 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
             if decl_type.is_final:
                 self.syntax_error("Cannot assign to a Final variable", target)
             self.check_can_assign_from(decl_type.type.klass, value.klass, target)
+            self.module.declared_types.pop(self.get_target_decl_node(name), None)
 
         if decl_node := self.get_target_decl_node(name):
             # TODO: re-evaluate why this is doing src or target. maybe link both?
             self.module.add_inflow(decl_node, src or target)
         local_type = self.maybe_set_local_type(name, value)
         self.set_type(target, local_type)
+        if (decl_type is None and not isinstance(self.scope, ast.ClassDef)
+                and self.get_var_scope(name) not in (SC_GLOBAL_EXPLICIT, SC_FREE, SC_CELL)):
+            self.module.declared_types[target] = local_type
 
     def assign_value(
         self,
@@ -1420,7 +1428,8 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         return NO_EFFECT
 
     def visit_comprehension(
-        self, node: ast.expr, generators: list[ast.comprehension], *elts: ast.expr
+        self, node: ast.expr, generators: list[ast.comprehension], *elts: ast.expr,
+        expected: Class | None = None,
     ) -> None:
         self.visit(generators[0].iter)
 
@@ -1448,7 +1457,8 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
 
         for elt in elts:
             self.visitExpectedType(
-                elt, self.type_env.DYNAMIC, "generator element cannot be a primitive"
+                elt, expected or self.type_env.DYNAMIC,
+                "generator element cannot be a primitive",
             )
 
         self.scopes.pop()
