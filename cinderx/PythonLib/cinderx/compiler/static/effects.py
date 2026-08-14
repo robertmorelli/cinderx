@@ -22,11 +22,15 @@ class TypeState:
     def __init__(self) -> None:
         self.local_types: dict[str, Value] = {}
         self.refined_fields: dict[str, RefinedFields] = {}
+        # reaching definitions: which AST node(s) gave each local its current
+        # type. Parallel to local_types, joined wherever local_types is joined.
+        self.local_defs: dict[str, frozenset[object]] = {}
 
     def copy(self) -> TypeState:
         type_state = TypeState()
         type_state.local_types = dict(self.local_types)
         type_state.refined_fields = dict(self.refined_fields)
+        type_state.local_defs = dict(self.local_defs)
         return type_state
 
     def __repr__(self) -> str:

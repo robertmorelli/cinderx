@@ -233,6 +233,7 @@ class LocalsBranch:
             entry_type_state = self.entry_type_state
 
         local_types = self.scope.type_state.local_types
+        local_defs = self.scope.type_state.local_defs
         refined_fields = self.scope.type_state.refined_fields
         keys_to_remove = []
         for key, value in local_types.items():
@@ -241,10 +242,15 @@ class LocalsBranch:
                     local_types[key] = self._join(
                         value, entry_type_state.local_types[key]
                     )
+                # a merged type comes from both branches: union the defs so a
+                # read after the join sees every definition reaching it
+                local_defs[key] = local_defs.get(key, frozenset()) | \
+                    entry_type_state.local_defs.get(key, frozenset())
             else:
                 keys_to_remove.append(key)
         for key in keys_to_remove:
             del local_types[key]
+            local_defs.pop(key, None)
 
         keys_to_remove = [
             key for key in refined_fields if key not in entry_type_state.refined_fields
@@ -362,13 +368,18 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
     def context_qualname(self) -> str:
         return self.binding_scope.qualname or ""
 
-    def maybe_set_local_type(self, name: str, local_type: Value) -> Value:
+    def maybe_set_local_type(
+        self, name: str, local_type: Value, node: AST | None = None
+    ) -> Value:
         decl = self.get_target_decl(name)
         assert decl is not None
         decl_type = decl.type
         if local_type is self.type_env.DYNAMIC or not decl_type.klass.can_be_narrowed:
             local_type = decl_type
         self.type_state.local_types[name] = local_type
+        if node is not None:
+            # this assignment is now the definition reaching later reads
+            self.type_state.local_defs[name] = frozenset([node])
         return local_type
 
     def maybe_get_current_class(self) -> Class | None:
@@ -468,6 +479,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
     ) -> None:
         scope.declare(arg.arg, arg_type)
         scope.decl_nodes[arg.arg] = arg
+        self.module.declaration_types[arg] = arg_type
         self.set_type(arg, arg_type)
 
     def _visitParameters(self, args: ast.arguments, scope: BindingScope) -> None:
@@ -617,6 +629,9 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         self._visitTypeParams(node)
         func = self.get_func_container(node)
         func.bind_function(node, self)
+        return_type = getattr(func, "return_type", None)
+        if return_type is not None:
+            self.module.declaration_types[node] = return_type.resolved().instance
         typ = self.get_type(node)
         # avoid declaring unknown-decorateds as locals in order to support
         # @overload and @property.setter
@@ -817,6 +832,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
             is_final = True
 
         declared_type = comp_type.instance
+        self.module.declaration_types[target] = declared_type
         is_dynamic_final = is_final and declared_type is self.type_env.DYNAMIC
         if isinstance(target, Name):
             # We special case x: Final[dynamic] = value to treat `x`'s inferred type as the
@@ -849,7 +865,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                     # We could be narrowing the type after the assignment, so we update it here
                     # even though we assigned it above (but we never narrow primtives)
                     new_type = self.get_type(value)
-                    local_type = self.maybe_set_local_type(target.id, new_type)
+                    local_type = self.maybe_set_local_type(target.id, new_type, target)
                     self.set_type(target, local_type)
 
                 self._check_final_attribute_reassigned(target, node)
@@ -1339,7 +1355,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         if decl_node := self.get_target_decl_node(name):
             # TODO: re-evaluate why this is doing src or target. maybe link both?
             self.module.add_inflow(decl_node, src or target)
-        local_type = self.maybe_set_local_type(name, value)
+        local_type = self.maybe_set_local_type(name, value, target)
         self.set_type(target, local_type)
         if (decl_type is None and not isinstance(self.scope, ast.ClassDef)
                 and self.get_var_scope(name) not in (SC_GLOBAL_EXPLICIT, SC_FREE, SC_CELL)):
@@ -1703,6 +1719,9 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
                 found_name = True
             var_type = self.type_state.local_types.get(node.id, self.type_env.DYNAMIC)
             self.set_type(node, var_type, type_ctx)
+            defs = self.type_state.local_defs.get(node.id)
+            if defs:
+                self.module.resolved_from[node] = defs
         else:
             typ, descr = self.module.resolve_name_with_descr(
                 node.id, self.context_qualname
@@ -2110,6 +2129,9 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
         with self.in_target():
             container_type.bind_forloop_target(node.target, self)
         self.assign_value(node.target, target_type)
+        for target in ast.walk(node.target):
+            if isinstance(target, ast.Name):
+                self.module.iteration_types[target] = self.get_type(target)
         branch = self.scopes[-1].branch()
         with self.in_loop(node):
             self.iterate_to_fixed_point(node.body)

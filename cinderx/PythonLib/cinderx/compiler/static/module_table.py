@@ -285,6 +285,12 @@ class ModuleTable:
         self.expr_ctx_types: dict[AST, Value | None] = {}
         self.expr_types: dict[AST, Value | None] = {}
         self.declared_types: dict[AST, Value] = {}
+        # Annotation-backed slot values keyed by arg / AnnAssign target /
+        # FunctionDef. Unlike expr_types these are not flow-narrowed.
+        self.declaration_types: dict[AST, Value] = {}
+        self.iteration_types: dict[AST, Value] = {}
+        # read node -> the definition(s) whose type it sees
+        self.resolved_from: dict[AST, frozenset[AST]] = {}
         self.constructors: dict[AST, Class | None] = {}
 
         # maps linked items with annos
