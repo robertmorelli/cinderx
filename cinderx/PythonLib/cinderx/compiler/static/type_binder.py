@@ -1353,6 +1353,7 @@ class TypeBinder(GenericVisitor[Optional[NarrowingEffect]]):
             self.module.declared_types.pop(self.get_target_decl_node(name), None)
 
         if decl_node := self.get_target_decl_node(name):
+            self.module.assignment_declarations[target] = decl_node
             # TODO: re-evaluate why this is doing src or target. maybe link both?
             self.module.add_inflow(decl_node, src or target)
         local_type = self.maybe_set_local_type(name, value, target)

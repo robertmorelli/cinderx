@@ -289,6 +289,8 @@ class ModuleTable:
         # FunctionDef. Unlike expr_types these are not flow-narrowed.
         self.declaration_types: dict[AST, Value] = {}
         self.iteration_types: dict[AST, Value] = {}
+        # Assignment target -> declaration selected by the binder.
+        self.assignment_declarations: dict[AST, AST] = {}
         # read node -> the definition(s) whose type it sees
         self.resolved_from: dict[AST, frozenset[AST]] = {}
         self.constructors: dict[AST, Class | None] = {}
